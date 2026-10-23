@@ -1,0 +1,14 @@
+[project]
+name = "runbook-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Wilmer Arteaga", email = "killerwilmer@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=3.37.0",
+    "python-dotenv>=1.2.4",
+    "rich>=15.0.0",
+]

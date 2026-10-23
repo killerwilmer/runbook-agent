@@ -1,0 +1,173 @@
+# runbook-agent 🚨🤖
+
+> Copiloto de IA para ingenieros de guardia (SRE/DevOps): diagnostica incidentes consultando
+> runbooks, postmortems y logs, propone un plan de mitigación y **solo ejecuta acciones críticas
+> con aprobación humana**.
+
+![status](https://img.shields.io/badge/status-en%20construcción-orange)
+![python](https://img.shields.io/badge/python-3.12-blue)
+![uv](https://img.shields.io/badge/deps-uv-purple)
+
+## El problema
+
+Son las 3 a. m. y suena la alerta: `checkout-api` devuelve errores 502 y los usuarios no pueden
+pagar. El ingeniero de guardia tiene que encontrar el runbook correcto entre decenas, revisar logs y
+métricas, recordar si esto ya pasó antes y decidir si es seguro hacer un rollback, todo bajo presión.
+
+Los runbooks y postmortems guardan el conocimiento del equipo, pero **encontrar y aplicar la
+información correcta en el momento justo** es lento y propenso a errores.
+
+## La solución (objetivo)
+
+`runbook-agent` actúa como un ingeniero de guardia experto que leyó toda la documentación operativa
+del equipo:
+
+1. **Entiende el incidente** a partir de un mensaje libre y estima su severidad (SEV1–SEV4).
+2. **Busca** los runbooks y postmortems relevantes (RAG híbrido: semántico + palabras clave, para
+   códigos de error exactos como `OOMKilled`).
+3. **Investiga** con herramientas: lee logs, revisa el estado y las métricas de los servicios.
+4. **Propone** un diagnóstico y un plan **citando sus fuentes**.
+5. **Pide aprobación humana** antes de cualquier acción destructiva (reinicio, rollback) y deja
+   un registro de auditoría.
+
+## Arquitectura (objetivo)
+
+```mermaid
+flowchart LR
+    U[👩‍💻 Ingeniero de guardia] -->|"checkout-api da 502"| P
+
+    subgraph G[LangGraph multiagente]
+        direction LR
+        P[Planner<br/>triage y severidad] --> D[Diagnosticador]
+        D --> E[Ejecutor<br/>plan de mitigación]
+        E --> V{Verificador<br/>¿tiene sustento?}
+        V -->|revisar| E
+    end
+
+    D <-->|búsqueda híbrida| KB[(Runbooks y<br/>postmortems)]
+    D <-->|tools vía MCP| T[leer_logs · estado_servicio<br/>métricas · reiniciar_servicio]
+    V -->|acción crítica| H[👤 Aprobación humana]
+    H --> A[(Auditoría)]
+```
+
+## Roadmap
+
+El proyecto se construye de forma incremental, una capa por etapa:
+
+- [x] **Cliente LLM multi-proveedor** (Groq / Gemini) con métricas de tokens, latencia y costo por llamada
+- [ ] Análisis de tokens, ventana de contexto y costo
+- [ ] Clasificación de severidad con prompts versionados y evaluados contra un golden set
+- [ ] Contratos con Pydantic y function calling
+- [ ] RAG sobre runbooks y postmortems: ingesta, chunking y ChromaDB
+- [ ] RAG avanzado: búsqueda híbrida (BM25 + embeddings), reranking y compresión
+- [ ] RAG en producción: reindexado incremental, permisos por equipo y caché semántico
+- [ ] Soporte para modelos locales (los logs de producción son sensibles)
+- [ ] Tools de infraestructura y pipeline de triage
+- [ ] Agente ReAct con traza de razonamiento
+- [ ] Multiagente con LangGraph (planner → diagnosticador → ejecutor → verificador)
+- [ ] Memoria por incidente + human-in-the-loop + auditoría
+- [ ] Tools expuestas como servidor MCP
+- [ ] Tests: contratos, golden tests y replay de incidentes
+- [ ] Evals: faithfulness, context precision/recall y tool accuracy; optimización con DSPy
+- [ ] Guardrails (prompt injection en logs, secretos/PII), observabilidad con Phoenix y deploy
+
+## Decisiones técnicas
+
+### Cliente LLM independiente del proveedor
+Todo el sistema habla con un único `LLMClient` (`core/llm_client.py`) que devuelve un `LLMResponse`
+tipado. Groq y Gemini se usan mediante su **API compatible con OpenAI**, así que cambiar de proveedor
+es **una línea en `.env`**, sin tocar código. Esto también deja un único lugar donde agregar
+reintentos, fallback entre proveedores, caché o trazas.
+
+### Medir cada llamada desde el día uno
+Cada llamada registra tokens de entrada y salida, latencia y costo estimado:
+
+```
+llm_call | provider=groq | model=openai/gpt-oss-120b | prompt_tokens=113 | completion_tokens=68 | latency_ms=857 | cost_usd=0.000058
+```
+
+Tokens, latencia y costo deciden si un sistema de IA es viable en producción; lo que no se mide no
+se puede optimizar.
+
+### El precio por token no dice cuánto vas a pagar
+Con exactamente el mismo prompt, cada modelo contó una cantidad distinta de tokens de entrada:
+
+| Modelo | Tokens de entrada (mismo prompt) |
+|---|---|
+| `openai/gpt-oss-120b` | 113 |
+| `qwen/qwen3.8-27b` | 57 |
+
+Cada familia tiene su propio tokenizador, y algunos modelos agregan un formato interno a cada
+petición. Además, los modelos de razonamiento gastan tokens de salida que no se ven. **Para comparar
+costos hay que medir con prompts reales, no solo comparar tarifas.**
+
+### Versiones de modelo fijas, nunca alias `latest`
+Los proveedores retiran modelos (un modelo que existía devolvió `404 model_not_found`) y los alias
+como `gemini-flash-latest` cambian de modelo sin aviso. Por eso el modelo se fija a una versión
+concreta en la configuración y solo se cambia a propósito, después de evaluar.
+
+### Los proveedores fallan: timeouts y reintentos explícitos
+En una sola sesión de pruebas aparecieron un `404` (modelo retirado), **164 s de latencia** por
+saturación con reintentos automáticos y un `500 Internal error` del proveedor. El SDK espera hasta
+10 minutos por defecto, inaceptable durante un incidente. Por eso el timeout y el número de
+reintentos son configuración explícita (`LLM_TIMEOUT_S`, `LLM_MAX_RETRIES`), y el paso siguiente
+es un fallback automático entre proveedores.
+
+### Configuración que falla rápido
+`core/config.py` valida la configuración al arrancar: si falta una API key o un valor es inválido,
+el programa se detiene con un mensaje claro, en vez de fallar a mitad de una petición.
+
+## Stack
+
+| Área | Tecnología |
+|---|---|
+| Lenguaje y dependencias | Python 3.12, [uv](https://docs.astral.sh/uv/) |
+| LLMs | Groq (`openai/gpt-oss-120b`), Google Gemini — vía API compatible con OpenAI |
+| Logging | `logging` + Rich |
+| Próximamente | ChromaDB, LangGraph, Pydantic, MCP, pytest, DSPy, Arize Phoenix, Streamlit, Docker |
+
+## Cómo correrlo
+
+Requisitos: [uv](https://docs.astral.sh/uv/getting-started/installation/) y una API key gratuita de
+[Groq](https://console.groq.com/keys) o de [Google AI Studio](https://aistudio.google.com/apikey).
+
+```bash
+git clone https://github.com/killerwilmer/runbook-agent.git
+cd runbook-agent
+uv sync                     # crea el entorno e instala dependencias exactas (uv.lock)
+cp .env.example .env        # y completa tu API key
+uv run main.py
+```
+
+### Configuración (`.env`)
+
+| Variable | Descripción | Por defecto |
+|---|---|---|
+| `LLM_PROVIDER` | `groq` o `gemini` | `groq` |
+| `LLM_MODEL` | Modelo del proveedor elegido (versión fija) | `openai/gpt-oss-120b` |
+| `LLM_TEMPERATURE` | Temperatura de muestreo | `0.2` |
+| `LLM_TIMEOUT_S` | Segundos máximos de espera por llamada | `30` |
+| `LLM_MAX_RETRIES` | Reintentos ante errores temporales | `2` |
+| `GROQ_API_KEY` / `GEMINI_API_KEY` | API key del proveedor elegido | — |
+| `INPUT_COST_PER_1M_TOKENS` / `OUTPUT_COST_PER_1M_TOKENS` | Precio en USD por millón de tokens, para estimar costos | `0` |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING` o `ERROR` | `INFO` |
+
+## Estructura
+
+```
+runbook-agent/
+├── core/
+│   ├── config.py       # configuración desde .env, validada al arrancar
+│   ├── logger.py       # logging con niveles (Rich)
+│   └── llm_client.py   # cliente LLM multi-proveedor con métricas
+├── main.py             # punto de entrada (CLI)
+├── .env.example        # variables necesarias, sin secretos
+└── pyproject.toml
+```
+
+## Autor
+
+**Wilmer Arteaga** — construyendo `runbook-agent` como proyecto del bootcamp *AI Engineer con
+Python* de Código Facilito.
+
+[GitHub](https://github.com/killerwilmer) · [LinkedIn](https://www.linkedin.com/in/killerwilmer/)
