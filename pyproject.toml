@@ -1,7 +1,7 @@
 [project]
 name = "runbook-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Copiloto de IA para ingenieros de guardia (SRE/DevOps): diagnostica incidentes consultando runbooks, postmortems y logs, propone un plan de mitigación y solo ejecuta acciones críticas con aprobación humana."
 readme = "README.md"
 authors = [
     { name = "Wilmer Arteaga", email = "killerwilmer@gmail.com" }
@@ -11,4 +11,13 @@ dependencies = [
     "openai>=3.37.0",
     "python-dotenv>=1.2.4",
     "rich>=15.0.0",
+    "tiktoken>=0.14.0",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.3",
+]
+
+[tool.ruff]
+line-length = 100
