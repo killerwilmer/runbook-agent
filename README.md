@@ -55,7 +55,7 @@ flowchart LR
 El proyecto se construye de forma incremental, una capa por etapa:
 
 - [x] **Cliente LLM multi-proveedor** (Groq / Gemini) con métricas de tokens, latencia y costo por llamada
-- [ ] Análisis de tokens, ventana de contexto y costo
+- [x] **Análisis de tokens y costo**: conteo local con tiktoken, presupuestos por feature y streaming con TTFT
 - [ ] Clasificación de severidad con prompts versionados y evaluados contra un golden set
 - [ ] Contratos con Pydantic y function calling
 - [ ] RAG sobre runbooks y postmortems: ingesta, chunking y ChromaDB
@@ -83,7 +83,7 @@ reintentos, fallback entre proveedores, caché o trazas.
 Cada llamada registra tokens de entrada y salida, latencia y costo estimado:
 
 ```
-llm_call | provider=groq | model=openai/gpt-oss-120b | prompt_tokens=113 | completion_tokens=68 | latency_ms=857 | cost_usd=0.000058
+llm_call | provider=groq | model=openai/gpt-oss-120b | prompt_tokens=113 | completion_tokens=68 | ttft_ms=- | latency_ms=857 | cost_usd=0.000058
 ```
 
 Tokens, latencia y costo deciden si un sistema de IA es viable en producción; lo que no se mide no
@@ -113,6 +113,68 @@ saturación con reintentos automáticos y un `500 Internal error` del proveedor.
 reintentos son configuración explícita (`LLM_TIMEOUT_S`, `LLM_MAX_RETRIES`), y el paso siguiente
 es un fallback automático entre proveedores.
 
+### Groq como proveedor principal: latencia medida
+Mismo laboratorio en streaming (`scripts/tokenlab_lab.py`), resumiendo un runbook de distintos tamaños:
+
+| Tokens de entrada | Groq `gpt-oss-120b`: TTFT / total | Gemini `gemma-4-26b-a4b-it`: TTFT / total |
+|---|---|---|
+| ~150 | 675 ms / 764 ms | 1441 ms / 3272 ms |
+| ~1400 | 873 ms / 946 ms | 1082 ms / 1989 ms |
+| ~5300 | 1035 ms / 1142 ms | 1739 ms / 2420 ms |
+
+En Groq, cada respuesta completa tardó alrededor de 1 s, incluso con un límite de salida 4 veces
+mayor (400 tokens contra 100). En Gemma, una respuesta de chat de 212 tokens tardó **17,5 s**.
+Durante un incidente cada segundo cuenta, así que Groq es el proveedor principal y Gemini queda
+como respaldo. Con Groq también se ve que el TTFT crece con el input (de 675 a 1035 ms): el modelo
+procesa todo el prompt antes de escribir el primer token.
+
+### Los modelos que razonan gastan tokens que no se ven
+Con `max_tokens=100`, `gpt-oss-120b` se gastó todo el límite **pensando** y devolvió una respuesta
+vacía (`finish_reason="length"`). Gemma, en cambio, mezcla su razonamiento (`<thought>...`) en el
+texto de la respuesta. Ese razonamiento cuenta en el límite de salida, en el costo y en la latencia:
+el TTFT medido incluye el tiempo de pensar, y los tokens por segundo salen inflados. Por eso el
+cliente revisa `finish_reason` y, si se agotó el límite, explica la causa en vez de un genérico
+"respuesta vacía". Los presupuestos de salida se dimensionan pensando en el razonamiento.
+
+### Temperatura 0 para clasificar
+La misma consulta ("el login falla para el 30 % de los usuarios desde hace 5 minutos"), 3 veces:
+
+| Temperatura | Severidades obtenidas |
+|---|---|
+| 0.0 | SEV2 · SEV2 · SEV2 (respuestas idénticas) |
+| 1.2 | SEV2 · **SEV1** · SEV2 |
+
+En un clasificador de severidad, esa variación significa despertar a alguien a las 3 a. m. por azar.
+Las tareas de clasificación y decisión usan temperatura 0; la variabilidad queda para tareas
+abiertas, como redactar un resumen.
+
+### El costo está en el contexto, no en el prompt
+Anatomía de un request con RAG, contada localmente con tiktoken antes de llamar al modelo:
+
+| Parte | Tokens |
+|---|---|
+| System prompt | 38 |
+| Runbook recuperado (RAG) | 961 (95 %) |
+| Pregunta del usuario | 11 |
+
+Con ~500 tokens de salida y los precios de `gpt-oss-120b`, eso proyecta **$1.35 al mes con 100
+consultas al día y ~$1 350 con 100 000**. Para bajar el costo hay que optimizar lo que trae el RAG,
+no recortar el prompt.
+
+Por eso cada feature tiene un **presupuesto de tokens** (`core/tokenlab.py`). El input se valida
+**antes** de gastar un solo token: un request de ~1300 tokens se rechaza en `clasificar_severidad`
+(máximo 500), pero cabe en `responder_con_runbook` (máximo 4000).
+
+| Feature | Máx. entrada | Máx. salida |
+|---|---|---|
+| `chat_general` | 2 000 | 800 |
+| `clasificar_severidad` | 500 | 50 |
+| `responder_con_runbook` | 4 000 | 800 |
+| `diagnostico_agente` | 15 000 | 2 000 |
+
+El conteo local es exacto para `gpt-oss`, porque tiktoken incluye su tokenizador (`o200k_harmony`),
+y aproximado para otros modelos: con Gemma, la diferencia medida fue de ~3 %.
+
 ### Configuración que falla rápido
 `core/config.py` valida la configuración al arrancar: si falta una API key o un valor es inválido,
 el programa se detiene con un mensaje claro, en vez de fallar a mitad de una petición.
@@ -123,7 +185,9 @@ el programa se detiene con un mensaje claro, en vez de fallar a mitad de una pet
 |---|---|
 | Lenguaje y dependencias | Python 3.12, [uv](https://docs.astral.sh/uv/) |
 | LLMs | Groq (`openai/gpt-oss-120b`), Google Gemini — vía API compatible con OpenAI |
+| Tokens | tiktoken (conteo local antes de llamar al modelo) |
 | Logging | `logging` + Rich |
+| Calidad de código | ruff |
 | Próximamente | ChromaDB, LangGraph, Pydantic, MCP, pytest, DSPy, Arize Phoenix, Streamlit, Docker |
 
 ## Cómo correrlo
@@ -136,7 +200,8 @@ git clone https://github.com/killerwilmer/runbook-agent.git
 cd runbook-agent
 uv sync                     # crea el entorno e instala dependencias exactas (uv.lock)
 cp .env.example .env        # y completa tu API key
-uv run main.py
+uv run main.py              # chat con streaming y métricas
+uv run python -m scripts.tokenlab_lab   # laboratorio de tokens, costo, latencia y temperatura
 ```
 
 ### Configuración (`.env`)
@@ -159,8 +224,11 @@ runbook-agent/
 ├── core/
 │   ├── config.py       # configuración desde .env, validada al arrancar
 │   ├── logger.py       # logging con niveles (Rich)
-│   └── llm_client.py   # cliente LLM multi-proveedor con métricas
-├── main.py             # punto de entrada (CLI)
+│   ├── llm_client.py   # cliente LLM multi-proveedor: chat y streaming con métricas
+│   └── tokenlab.py     # conteo de tokens, proyección de costos y presupuestos por feature
+├── scripts/
+│   └── tokenlab_lab.py # experimentos medibles de tokens, costo, latencia y temperatura
+├── main.py             # punto de entrada (CLI) con streaming y control de presupuesto
 ├── .env.example        # variables necesarias, sin secretos
 └── pyproject.toml
 ```
