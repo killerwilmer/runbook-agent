@@ -56,7 +56,7 @@ El proyecto se construye de forma incremental, una capa por etapa:
 
 - [x] **Cliente LLM multi-proveedor** (Groq / Gemini) con métricas de tokens, latencia y costo por llamada
 - [x] **Análisis de tokens y costo**: conteo local con tiktoken, presupuestos por feature y streaming con TTFT
-- [ ] Clasificación de severidad con prompts versionados y evaluados contra un golden set
+- [x] **Clasificación de severidad** con prompts versionados y evaluados contra un golden set
 - [ ] Contratos con Pydantic y function calling
 - [ ] RAG sobre runbooks y postmortems: ingesta, chunking y ChromaDB
 - [ ] RAG avanzado: búsqueda híbrida (BM25 + embeddings), reranking y compresión
@@ -175,6 +175,44 @@ Por eso cada feature tiene un **presupuesto de tokens** (`core/tokenlab.py`). El
 El conteo local es exacto para `gpt-oss`, porque tiktoken incluye su tokenizador (`o200k_harmony`),
 y aproximado para otros modelos: con Gemma, la diferencia medida fue de ~3 %.
 
+### Prompts como código, evaluados contra un golden set
+Los prompts viven en `prompting/` como plantillas con **nombre y versión** en un registro central. Una
+versión publicada no se modifica: cualquier cambio es una versión nueva, con su propia evaluación.
+Cada versión se mide contra un golden set de 20 incidentes etiquetados
+(`data/golden/severidad.json`), que incluye casos en inglés, jerga de Kubernetes y un *prompt
+injection* escondido en un log.
+
+Resultados con `gpt-oss-120b` y temperatura 0 (`scripts/eval_severidad.py`):
+
+| Versión | Qué agrega | Accuracy | Subestimados | Tokens/llamada | Costo (20 casos) |
+|---|---|---|---|---|---|
+| v1 | Pide SEV1–SEV4 en JSON, sin criterios | 80 % | 0 | 305 | $0.0023 |
+| v2 | Rol + rúbrica SEV + servicios críticos + delimitadores | 90 % | 2 | 610 | $0.0034 |
+| **v3** | v2 + restricciones + 4 ejemplos (*few-shot*) | **95 %** | **1** | 904 | $0.0042 |
+| v4 | Cadena de 2 prompts: extraer hechos → clasificar | 85 % | 2 | 1505 | $0.0089 |
+
+Lo que mostraron los datos:
+
+- **La accuracy sola engaña.** Sin rúbrica (v1), los 4 errores fueron **sobreestimaciones**. Con la
+  rúbrica (v2), la accuracy subió, pero aparecieron **subestimaciones**, el error caro: un SEV1
+  tratado como SEV3 deja la tienda caída. Por eso el evaluador mide los subestimados aparte, y entre
+  dos versiones parecidas gana la que subestima menos.
+- **La cadena no pagó su costo.** v4 gastó 1,7 veces los tokens de v3 y el doble de latencia, y
+  acertó menos: el paso de extracción pierde matices (por ejemplo, si los afectados son usuarios
+  internos). Dividir en pasos no es mejor por defecto; se mide.
+- **Un fallo que se repite en todas las versiones apunta a la rúbrica, no al prompt.** `search-service`
+  caído para todos, con rodeo, falló en v2, v3 y v4: la rúbrica permite leerlo como SEV2 ("función
+  importante caída con rodeo") o como SEV3 ("servicio no crítico"). Se corrige aclarando el criterio,
+  no ajustando el prompt hasta que acierte.
+- **El *prompt injection* no funcionó** en ninguna versión: el incidente va delimitado como datos
+  (`<incidente>...</incidente>`). Es un solo caso; los guardrails dedicados vienen después.
+- **Con 20 casos, cada caso vale 5 puntos**: v3 es la versión en uso, pero la diferencia con v2 es un
+  solo caso. El siguiente paso es ampliar el golden set antes de afirmar más.
+
+El presupuesto de tokens de `clasificar_severidad` se ajustó con estas mediciones: el prompt v3 usa
+~670 tokens de entrada, y gpt-oss gasta la mayor parte de la salida razonando (~190 de ~220 tokens
+para devolver un JSON de ~25).
+
 ### Configuración que falla rápido
 `core/config.py` valida la configuración al arrancar: si falta una API key o un valor es inválido,
 el programa se detiene con un mensaje claro, en vez de fallar a mitad de una petición.
@@ -202,6 +240,7 @@ uv sync                     # crea el entorno e instala dependencias exactas (uv
 cp .env.example .env        # y completa tu API key
 uv run main.py              # chat con streaming y métricas
 uv run python -m scripts.tokenlab_lab   # laboratorio de tokens, costo, latencia y temperatura
+uv run python -m scripts.eval_severidad # compara las versiones del prompt de severidad
 ```
 
 ### Configuración (`.env`)
@@ -226,8 +265,15 @@ runbook-agent/
 │   ├── logger.py       # logging con niveles (Rich)
 │   ├── llm_client.py   # cliente LLM multi-proveedor: chat y streaming con métricas
 │   └── tokenlab.py     # conteo de tokens, proyección de costos y presupuestos por feature
+├── prompting/
+│   ├── promptkit.py    # plantillas versionadas, cadenas de prompts y registro central
+│   ├── severidad.py    # rúbrica SEV y versiones del clasificador de severidad
+│   └── evaluation.py   # evaluación contra golden set: accuracy, subestimados, tokens y costo
+├── data/golden/
+│   └── severidad.json  # 20 incidentes etiquetados con su severidad correcta
 ├── scripts/
-│   └── tokenlab_lab.py # experimentos medibles de tokens, costo, latencia y temperatura
+│   ├── tokenlab_lab.py # experimentos medibles de tokens, costo, latencia y temperatura
+│   └── eval_severidad.py # compara las versiones del prompt contra el golden set
 ├── main.py             # punto de entrada (CLI) con streaming y control de presupuesto
 ├── .env.example        # variables necesarias, sin secretos
 └── pyproject.toml
