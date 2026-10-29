@@ -70,7 +70,8 @@ class FeatureBudget:
 # los ajustarás con mediciones reales a medida que construyas cada feature.
 BUDGETS: dict[str, FeatureBudget] = {
     "chat_general": FeatureBudget(max_input_tokens=2_000, max_output_tokens=800),
-    "clasificar_severidad": FeatureBudget(max_input_tokens=500, max_output_tokens=50),
+    # Medido: el prompt v3 usa ~670 tokens y gpt-oss razona antes de responder.
+    "clasificar_severidad": FeatureBudget(max_input_tokens=1_000, max_output_tokens=500),
     "responder_con_runbook": FeatureBudget(max_input_tokens=4_000, max_output_tokens=800),
     "diagnostico_agente": FeatureBudget(max_input_tokens=15_000, max_output_tokens=2_000),
 }
