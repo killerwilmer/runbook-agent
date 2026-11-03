@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from string import Template
 
+from pydantic import BaseModel
+
 from core.llm_client import LLMClient
 
 Message = dict[str, str]
@@ -28,6 +30,8 @@ class PromptTemplate:
     user: str
     system: str = ""
     description: str = ""
+    # Si hay schema, la salida es un objeto validado con Pydantic y no texto libre.
+    schema: type[BaseModel] | None = None
 
     @property
     def key(self) -> str:
@@ -45,8 +49,12 @@ class PromptTemplate:
         return messages
 
     def run(self, client: LLMClient, max_tokens: int = 1024, **variables: str) -> RunResult:
-        r = client.chat(self.render(**variables), max_tokens=max_tokens)
-        return RunResult(r.text, r.total_tokens, r.latency_ms, r.cost_usd)
+        if self.schema is None:
+            r = client.chat(self.render(**variables), max_tokens=max_tokens)
+            return RunResult(r.text, r.total_tokens, r.latency_ms, r.cost_usd)
+        p = client.parse(self.render(**variables), self.schema, max_tokens=max_tokens)
+        # model_dump_json() devuelve JSON limpio: el evaluador lo lee igual que antes.
+        return RunResult(p.value.model_dump_json(), p.total_tokens, p.latency_ms, p.cost_usd)
 
 
 @dataclass(frozen=True)

@@ -3,8 +3,10 @@
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from openai import OpenAI
+from pydantic import BaseModel, ValidationError
 
 from core.config import get_settings
 from core.logger import get_logger
@@ -12,7 +14,18 @@ from core.tokenlab import count_message_tokens, count_tokens
 
 logger = get_logger(__name__)
 
-Message = dict[str, str]  # {"role": "system" | "user" | "assistant", "content": "..."}
+# {"role": "system" | "user" | "assistant" | "tool", "content": "...", ...}
+# Any y no str: con tools, un mensaje también lleva tool_calls o tool_call_id.
+Message = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """Una función que el modelo PIDE ejecutar. El modelo no ejecuta nada: solo propone."""
+
+    id: str
+    name: str
+    arguments: str  # JSON generado por el modelo: hay que validarlo antes de usarlo
 
 
 @dataclass(frozen=True)
@@ -27,6 +40,7 @@ class LLMResponse:
     latency_ms: float
     cost_usd: float
     ttft_ms: float | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
 
     @property
     def total_tokens(self) -> int:
@@ -38,6 +52,21 @@ class LLMResponse:
         if self.ttft_ms is None or self.latency_ms <= self.ttft_ms:
             return None
         return self.completion_tokens / ((self.latency_ms - self.ttft_ms) / 1000)
+
+
+@dataclass(frozen=True)
+class Parsed[T: BaseModel]:
+    """Un objeto ya validado contra su contrato + lo que costó obtenerlo (todos los intentos)."""
+
+    value: T
+    attempts: int
+    total_tokens: int
+    latency_ms: float
+    cost_usd: float
+
+
+class ContractError(RuntimeError):
+    """El modelo no logró producir una salida que cumpla el contrato."""
 
 
 class LLMClient:
@@ -53,8 +82,21 @@ class LLMClient:
             max_retries=self.settings.llm_max_retries,
         )
 
-    def chat(self, messages: list[Message] | str, max_tokens: int = 1024) -> LLMResponse:
+    def chat(
+        self,
+        messages: list[Message] | str,
+        max_tokens: int = 1024,
+        *,
+        response_format: dict | None = None,
+        tools: list[dict] | None = None,
+    ) -> LLMResponse:
         messages = self._normalize(messages)
+        # Solo se envía lo que se usa: algunos proveedores rechazan parámetros en null.
+        extra: dict[str, Any] = {}
+        if response_format is not None:
+            extra["response_format"] = response_format
+        if tools:
+            extra["tools"] = tools
         started = time.perf_counter()  # perf_counter es el reloj correcto para medir duraciones
         try:
             response = self._client.chat.completions.create(
@@ -62,6 +104,7 @@ class LLMClient:
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=max_tokens,
+                **extra,
             )
         except Exception as exc:
             # logger.exception registra el traceback completo; luego relanzamos un error
@@ -72,6 +115,10 @@ class LLMClient:
 
         choice = response.choices[0]
         text = (choice.message.content or "").strip()
+        tool_calls = tuple(
+            ToolCall(tc.id, tc.function.name, tc.function.arguments)
+            for tc in choice.message.tool_calls or []
+        )
         usage = response.usage
         return self._finish(
             text,
@@ -79,7 +126,63 @@ class LLMClient:
             completion_tokens=usage.completion_tokens if usage else 0,
             latency_ms=latency_ms,
             finish_reason=choice.finish_reason,
+            tool_calls=tool_calls,
         )
+
+    def parse[T: BaseModel](
+        self,
+        messages: list[Message] | str,
+        schema: type[T],
+        max_tokens: int = 1024,
+        max_attempts: int = 2,
+    ) -> Parsed[T]:
+        """Pide una respuesta que cumpla `schema` y la valida con Pydantic.
+
+        Si no la cumple, le devuelve al modelo el error de validación y reintenta.
+        """
+        messages = list(self._normalize(messages))  # copia: al reintentar agregamos mensajes
+        # El esquema viaja al proveedor para que lo respete; Pydantic valida igual al volver.
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
+        }
+        tokens, latency_ms, cost = 0, 0.0, 0.0
+        last_error: ValidationError | None = None
+        for attempt in range(1, max_attempts + 1):
+            r = self.chat(messages, max_tokens=max_tokens, response_format=response_format)
+            tokens += r.total_tokens
+            latency_ms += r.latency_ms
+            cost += r.cost_usd
+            try:
+                value = schema.model_validate_json(r.text)
+            except ValidationError as exc:
+                logger.warning(
+                    "Salida fuera de contrato | schema=%s | intento=%d/%d | errores=%d",
+                    schema.__name__,
+                    attempt,
+                    max_attempts,
+                    exc.error_count(),
+                )
+                last_error = exc
+                # El error de Pydantic es la mejor instrucción para corregir: dice qué campo
+                # falló y por qué. Se lo devolvemos al modelo junto con su respuesta.
+                errores = "\n".join(
+                    f"- {'.'.join(map(str, e['loc'])) or 'objeto'}: {e['msg']}"
+                    for e in exc.errors()
+                )
+                messages += [
+                    {"role": "assistant", "content": r.text},
+                    {
+                        "role": "user",
+                        "content": f"Tu respuesta no cumple el contrato:\n{errores}\n"
+                        "Responde solo con el JSON corregido.",
+                    },
+                ]
+                continue
+            return Parsed(value, attempt, tokens, latency_ms, cost)
+        raise ContractError(
+            f"{schema.__name__}: sin una salida válida después de {max_attempts} intentos."
+        ) from last_error
 
     def stream(
         self,
@@ -156,9 +259,10 @@ class LLMClient:
         latency_ms: float,
         ttft_ms: float | None = None,
         finish_reason: str | None = None,
+        tool_calls: tuple[ToolCall, ...] = (),
     ) -> LLMResponse:
         """Paso común a chat() y stream(): valida, calcula costo y registra métricas."""
-        if not text:
+        if not text and not tool_calls:  # Pedir tools sin texto es una respuesta válida
             # ¿Por qué distinguir? "length" significa que se acabó max_tokens antes de escribir
             # la respuesta: típico de modelos que razonan. Un error que dice la causa ahorra horas.
             if finish_reason == "length":
@@ -178,6 +282,7 @@ class LLMClient:
             latency_ms=latency_ms,
             cost_usd=self._estimate_cost(prompt_tokens, completion_tokens),
             ttft_ms=ttft_ms,
+            tool_calls=tool_calls,
         )
         self._log_usage(result)
         return result

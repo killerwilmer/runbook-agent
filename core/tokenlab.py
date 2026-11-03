@@ -74,6 +74,8 @@ BUDGETS: dict[str, FeatureBudget] = {
     "clasificar_severidad": FeatureBudget(max_input_tokens=1_000, max_output_tokens=500),
     "responder_con_runbook": FeatureBudget(max_input_tokens=4_000, max_output_tokens=800),
     "diagnostico_agente": FeatureBudget(max_input_tokens=15_000, max_output_tokens=2_000),
+    # Contrato completo (6 campos) + razonamiento: ~820 tokens de entrada y hasta ~620 de salida.
+    "extraer_incidente": FeatureBudget(max_input_tokens=1_500, max_output_tokens=1_200),
 }
 
 

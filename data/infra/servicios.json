@@ -1,0 +1,10 @@
+[
+  {"servicio": "checkout-api", "estado": "degradado", "pods_listos": "2/3", "error_rate_pct": 12.5, "latencia_p99_ms": 4800, "ultimo_deploy": "2026-10-28T14:05:00Z", "alertas": ["HighErrorRate checkout-api 5xx > 5%", "PodCrashLooping checkout-api-7d9f (OOMKilled)"]},
+  {"servicio": "payments-api", "estado": "ok", "pods_listos": "3/3", "error_rate_pct": 0.2, "latencia_p99_ms": 310, "ultimo_deploy": "2026-10-25T09:30:00Z", "alertas": []},
+  {"servicio": "auth-service", "estado": "ok", "pods_listos": "4/4", "error_rate_pct": 0.1, "latencia_p99_ms": 120, "ultimo_deploy": "2026-10-20T11:00:00Z", "alertas": []},
+  {"servicio": "catalog-service", "estado": "ok", "pods_listos": "3/3", "error_rate_pct": 0.3, "latencia_p99_ms": 250, "ultimo_deploy": "2026-10-27T16:45:00Z", "alertas": []},
+  {"servicio": "search-service", "estado": "degradado", "pods_listos": "2/2", "error_rate_pct": 0.0, "latencia_p99_ms": 2900, "ultimo_deploy": "2026-10-28T10:15:00Z", "alertas": ["HighLatency search-service p99 > 2s"]},
+  {"servicio": "notifications-worker", "estado": "ok", "pods_listos": "2/2", "error_rate_pct": 0.0, "latencia_p99_ms": 90, "ultimo_deploy": "2026-10-22T08:00:00Z", "alertas": ["QueueBacklog notifications > 1000"]},
+  {"servicio": "admin-dashboard", "estado": "ok", "pods_listos": "1/1", "error_rate_pct": 0.0, "latencia_p99_ms": 800, "ultimo_deploy": "2026-10-15T13:20:00Z", "alertas": []},
+  {"servicio": "reports-batch", "estado": "caido", "pods_listos": "0/1", "error_rate_pct": 100.0, "latencia_p99_ms": 0, "ultimo_deploy": "2026-10-27T22:00:00Z", "alertas": ["JobFailed reports-batch nightly"]}
+]

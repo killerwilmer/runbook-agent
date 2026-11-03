@@ -1,11 +1,13 @@
 """Compara las versiones del prompt de severidad contra el golden set.
 
-Uso:  uv run python -m scripts.eval_severidad                 (todas las versiones)
-      uv run python -m scripts.eval_severidad --versiones 1 3 --delay 2
+Uso:    uv run python -m scripts.eval_severidad                 (todas las versiones)
+        uv run python -m scripts.eval_severidad --versiones 1 3 --delay 2
+        uv run python -m scripts.eval_severidad --prompt extraer_incidente --versiones 1
 """
 
 import argparse
 
+import prompting.incidente  # noqa: F401  (registra extraer_incidente)
 from core.config import get_settings
 from core.llm_client import LLMClient
 from core.logger import setup_logger
@@ -32,6 +34,7 @@ def imprimir_tabla(reports: list[EvalReport]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evalúa los prompts de severidad.")
+    parser.add_argument("--prompt", default="clasificar_severidad")
     parser.add_argument("--versiones", type=int, nargs="+", default=[1, 2, 3, 4])
     parser.add_argument("--delay", type=float, default=1.0, help="segundos entre llamadas")
     args = parser.parse_args()
@@ -40,12 +43,12 @@ def main() -> None:
     casos = load_golden_set(GOLDEN_SET)
     # temperature=0: para clasificar queremos la respuesta más probable, no creatividad.
     client = LLMClient(temperature=0.0)
-    budget = BUDGETS["clasificar_severidad"]
+    budget = BUDGETS[args.prompt]
     print(f"Modelo: {get_settings().llm_provider} / {client.model} · {len(casos)} casos")
 
     reports = []
     for version in args.versiones:
-        prompt = registry.get("clasificar_severidad", version)
+        prompt = registry.get(args.prompt, version)
         if isinstance(prompt, PromptTemplate):
             entrada = count_message_tokens(prompt.render(incidente=casos[0].input), client.model)
             cabe = "✅" if entrada <= budget.max_input_tokens else "❌"
