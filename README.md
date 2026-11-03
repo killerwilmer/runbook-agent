@@ -248,6 +248,22 @@ Lo que mostraron los datos:
   de entrada, pero el proveedor reporta ~826: el esquema viaja en cada request. Por eso
   `extraer_incidente` tiene su propio presupuesto (1 500 de entrada, 1 200 de salida).
 
+La demo ya usa `extraer_incidente@v2` (v1 + 4 ejemplos en formato de contrato). En sus 3 reportes,
+el caso ambiguo ("a varios compañeros no les deja entrar") no fue estable con v1: salió SEV2 en una
+corrida y SEV3 en otra, justificado con un *"menos del 10 % de usuarios"* que el modelo inventó (el
+campo de usuarios era `null`). Con v2 salió SEV2, justificado solo con lo que dice el reporte. Los ejemplos
+suben la entrada de ~850 a ~1 230 tokens por request. Son 3 casos: la comparación que vale es
+`--prompt extraer_incidente --versiones 1 2` sobre el golden set completo.
+
+### "No sé" no es un valor del enum
+El servicio de un incidente es `Servicio | None`: `null` cuando el reporte no lo dice. Al principio
+era un noveno miembro, `Servicio.DESCONOCIDO`, y eso abrió un bug: las tools reutilizan el enum para
+sus argumentos, así que el JSON Schema le ofrecía al modelo consultar el servicio `"desconocido"`.
+La validación lo aceptaba y la función fallaba con un `KeyError` que tumbaba el chat. Con `None`,
+`Servicio` solo contiene servicios que existen, y sigue siendo la única fuente de verdad para el
+contrato, las tools y los prompts. Los datos simulados se comprueban contra él al cargarse: si falta
+un servicio, el error aparece en la primera consulta y dice cuál falta.
+
 ### Function calling: el modelo propone, el código ejecuta
 Las tools (`tools/`) se declaran con un modelo Pydantic para sus argumentos y otro para su resultado:
 el JSON Schema que ve el modelo y la validación salen de la misma fuente. El modelo **pide** la tool,
@@ -258,6 +274,23 @@ es el primer control de costo de un agente.
 En la demo (`scripts/demo_contratos.py`), ante "reportan errores al pagar en checkout-api", el modelo
 decidió consultar `estado_servicio` y respondió con datos que solo existen en el estado simulado
 (2/3 pods, 12.5 % de errores, un pod `OOMKilled`).
+
+Con una segunda tool, `leer_logs(servicio, ultimos_minutos)`, y la pregunta "¿por qué falla
+checkout-api?", el modelo encadenó las dos en orden: estado y después logs (3 llamadas, 2 tools). La
+ventana se limita a `1-60` minutos en el contrato (`Field(ge=1, le=60)`) y a 50 líneas en la
+función, porque cada línea de log son tokens. Lo que mostraron dos corridas iguales:
+
+- **El modelo decide los argumentos, y un argumento razonable puede esconder la evidencia.** Pidió
+  `ultimos_minutos=10` y la ventana empezó a las 14:20. Quedaron fuera el deploy de v2.14.0 (14:05)
+  y los `OOMKilled`, mientras que los pods sanos seguían en v2.13.2. La respuesta habló de memoria y
+  de reiniciar el pod, sin conectar el problema con el deploy, cuando la evidencia apunta a un
+  rollback.
+- **El modelo no tiene reloj.** `estado_servicio` le dijo que el último deploy fue a las 14:05, pero
+  no sabe que "ahora" son las 14:30 (el reloj simulado de la tool), así que no puede calcular una
+  ventana que lo cubra. Las opciones son darle la hora en el prompt, guiar la ventana desde la
+  descripción de la tool o investigar en varios pasos (agente ReAct).
+- **El historial crece en cada ronda:** `prompt_tokens` pasó de 401 a 519 y luego a 710. Cada
+  resultado de una tool se reenvía en todas las llamadas siguientes.
 
 Un bug real durante el desarrollo lo dejó claro: `response_format` y `tools` se armaban pero **no
 se enviaban** al proveedor. Las extracciones fallaban por contrato en ambos intentos y, sin tools
@@ -329,10 +362,11 @@ runbook-agent/
 │   └── evaluation.py   # evaluación contra golden set: accuracy, subestimados, tokens y costo
 ├── tools/
 │   ├── base.py         # Tool (argumentos validados con Pydantic) y bucle chat_con_tools()
-│   └── infra.py        # estado_servicio (simulada)
+│   └── infra.py        # estado_servicio y leer_logs (simuladas)
 ├── data/
 │   ├── golden/severidad.json # 20 incidentes etiquetados con su severidad correcta
-│   └── infra/servicios.json  # estado simulado de los servicios de producción
+│   ├── infra/servicios.json  # estado simulado de los servicios de producción
+│   └── infra/logs/           # logs simulados por servicio (el escenario del deploy en checkout-api)
 ├── scripts/
 │   ├── tokenlab_lab.py # experimentos medibles de tokens, costo, latencia y temperatura
 │   ├── eval_severidad.py # compara versiones de un prompt contra el golden set
