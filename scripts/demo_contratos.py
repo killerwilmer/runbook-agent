@@ -7,9 +7,9 @@ from contracts.incidente import Incidente
 from core.llm_client import ContractError, LLMClient
 from core.logger import setup_logger
 from core.tokenlab import BUDGETS
-from prompting.incidente import EXTRAER_INCIDENTE_V1
+from prompting.incidente import EXTRAER_INCIDENTE_V2
 from tools.base import chat_con_tools
-from tools.infra import ESTADO_SERVICIO
+from tools.infra import ESTADO_SERVICIO, LEER_LOGS
 
 REPORTES = [
     "Desde el deploy de las 14:00 payments-api cobra dos veces cada compra, nos están llamando clientes.",
@@ -28,7 +28,7 @@ def demo_extraccion(client: LLMClient) -> None:
         print(f"\n📝 {reporte}")
         try:
             p = client.parse(
-                EXTRAER_INCIDENTE_V1.render(incidente=reporte),
+                EXTRAER_INCIDENTE_V2.render(incidente=reporte),
                 Incidente,
                 max_tokens=BUDGETS["extraer_incidente"].max_output_tokens,
             )
@@ -43,7 +43,7 @@ def demo_extraccion(client: LLMClient) -> None:
 
 
 def demo_tool(client: LLMClient) -> None:
-    titulo("2. Function calling: el modelo decide consultar estado_servicio")
+    titulo("2. Function calling: el modelo decide qué tools consultar")
     messages = [
         {
             "role": "system",
@@ -52,9 +52,9 @@ def demo_tool(client: LLMClient) -> None:
                 "servicio, consulta su estado con las tools. Responde en español, en 3 líneas."
             ),
         },
-        {"role": "user", "content": "Reportan errores al pagar en checkout-api, ¿qué ves?"},
+        {"role": "user", "content": "¿Por qué falla checkout-api?"},
     ]
-    r = chat_con_tools(client, messages, [ESTADO_SERVICIO])
+    r = chat_con_tools(client, messages, [ESTADO_SERVICIO, LEER_LOGS], max_rondas=4)
     print(f"\n{r.text}")
 
 

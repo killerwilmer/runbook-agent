@@ -63,4 +63,3 @@ EXTRAER_INCIDENTE_V2 = registry.register(
         schema=Incidente,
     )
 )
-

@@ -1,0 +1,3 @@
+2026-10-28T14:10:00Z INFO  payments-api healthcheck ok (3/3 pods)
+2026-10-28T14:20:00Z INFO  payments-api healthcheck ok (3/3 pods)
+2026-10-28T14:27:41Z WARN  timeout de 4.8 s llamando a checkout-api /orders/confirm (reintento 1/2)

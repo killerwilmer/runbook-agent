@@ -1,0 +1,9 @@
+2026-10-28T14:05:12Z INFO  deploy checkout-api v2.14.0 iniciado por ci-bot (commit 9f3c2e1)
+2026-10-28T14:06:40Z INFO  checkout-api-7d9f listo; tráfico enrutado a v2.14.0
+2026-10-28T14:12:03Z WARN  checkout-api-7d9f heap 1.6GiB/2GiB tras cargar el catálogo de promociones
+2026-10-28T14:15:47Z ERROR checkout-api-7d9f OOMKilled (exit code 137); reiniciando contenedor
+2026-10-28T14:16:02Z ERROR upstream connect error: 502 Bad Gateway en POST /checkout (pod checkout-api-7d9f)
+2026-10-28T14:18:31Z ERROR checkout-api-7d9f OOMKilled (exit code 137); CrashLoopBackOff
+2026-10-28T14:20:10Z WARN  5xx rate 12.5% en checkout-api (umbral 5%)
+2026-10-28T14:24:55Z ERROR upstream connect error: 502 Bad Gateway en POST /checkout (pod checkout-api-7d9f)
+2026-10-28T14:28:40Z INFO  checkout-api-5b21 y checkout-api-a8c0 sanos (heap 900MiB/2GiB, v2.13.2)
