@@ -57,7 +57,7 @@ El proyecto se construye de forma incremental, una capa por etapa:
 - [x] **Cliente LLM multi-proveedor** (Groq / Gemini) con métricas de tokens, latencia y costo por llamada
 - [x] **Análisis de tokens y costo**: conteo local con tiktoken, presupuestos por feature y streaming con TTFT
 - [x] **Clasificación de severidad** con prompts versionados y evaluados contra un golden set
-- [ ] Contratos con Pydantic y function calling
+- [x] **Contratos con Pydantic y function calling**: extracción estructurada de incidentes y primera tool de infraestructura (simulada)
 - [ ] RAG sobre runbooks y postmortems: ingesta, chunking y ChromaDB
 - [ ] RAG avanzado: búsqueda híbrida (BM25 + embeddings), reranking y compresión
 - [ ] RAG en producción: reindexado incremental, permisos por equipo y caché semántico
@@ -171,6 +171,7 @@ Por eso cada feature tiene un **presupuesto de tokens** (`core/tokenlab.py`). El
 | `clasificar_severidad` | 500 | 50 |
 | `responder_con_runbook` | 4 000 | 800 |
 | `diagnostico_agente` | 15 000 | 2 000 |
+| `extraer_incidente` | 1 500 | 1 200 |
 
 El conteo local es exacto para `gpt-oss`, porque tiktoken incluye su tokenizador (`o200k_harmony`),
 y aproximado para otros modelos: con Gemma, la diferencia medida fue de ~3 %.
@@ -213,6 +214,57 @@ El presupuesto de tokens de `clasificar_severidad` se ajustó con estas medicion
 ~670 tokens de entrada, y gpt-oss gasta la mayor parte de la salida razonando (~190 de ~220 tokens
 para devolver un JSON de ~25).
 
+### Contratos con Pydantic: la forma garantizada, el criterio no
+El resto del sistema no lee prosa del modelo: lee un objeto `Incidente` (`contracts/incidente.py`)
+con servicio, síntoma, porcentaje de usuarios, pérdida de datos o dinero, severidad y justificación.
+El JSON Schema se genera desde Pydantic, viaja al proveedor como *structured output* y la respuesta
+se valida igual al volver. Si no cumple, el error de validación se le devuelve al modelo y se
+reintenta (`LLMClient.parse()`). Las reglas entre campos que JSON Schema no puede expresar viven en
+un `@model_validator`: **pérdida de datos o dinero en un servicio crítico siempre es SEV1**.
+
+Evaluado contra el mismo golden set (`--prompt extraer_incidente --versiones 1`):
+
+| Prompt | Qué hace | Accuracy | Subestimados | JSON válido | Tokens/caso | Costo (20 casos) |
+|---|---|---|---|---|---|---|
+| `clasificar_severidad@v3` | Solo severidad, con 4 ejemplos | 95 % | 1 | — | 904 | $0.0042 |
+| `extraer_incidente@v1` | Contrato completo (6 campos), sin ejemplos | 70 % | 3 | **20/20** | 1345 | $0.0078 |
+
+Lo que mostraron los datos:
+
+- **El contrato garantizó la forma: 20/20 respuestas válidas.** Nada del sistema se rompe por un
+  JSON mal formado.
+- **El criterio empeoró.** v1 no tiene los ejemplos de v3 y hace más trabajo (6 campos en vez de
+  2). Un contrato no reemplaza al prompt: lo que mejora la clasificación sigue siendo el prompt. El
+  siguiente paso es una v2 con ejemplos *few-shot*.
+- **Una regla de negocio puede empujar hacia la sobreestimación.** Dos fallos fueron SEV2 → SEV1 en
+  `payments-api` ("rechaza pagos con Amex", "un pod de tres en CrashLoopBackOff"). El modelo marcó
+  pérdida de dinero, y con eso la regla solo acepta SEV1. Además, el mensaje de error del validador
+  sugiere una sola corrección (subir la severidad), no revisar si de verdad hay pérdida. La
+  definición de "pérdida de dinero" tiene que quedar escrita en la `description` del campo.
+- **Los 3 subestimados son servicios no críticos** (`search-service` vacío para todos,
+  `admin-dashboard` lento, `reports-batch` caído): sin ejemplos, el modelo asocia "no crítico" con
+  "poco grave". `search-service` también había fallado en las versiones de PromptKit.
+- **El esquema cuesta tokens que el conteo local no ve.** `count_message_tokens` estima ~383 tokens
+  de entrada, pero el proveedor reporta ~826: el esquema viaja en cada request. Por eso
+  `extraer_incidente` tiene su propio presupuesto (1 500 de entrada, 1 200 de salida).
+
+### Function calling: el modelo propone, el código ejecuta
+Las tools (`tools/`) se declaran con un modelo Pydantic para sus argumentos y otro para su resultado:
+el JSON Schema que ve el modelo y la validación salen de la misma fuente. El modelo **pide** la tool,
+el código valida los argumentos y la ejecuta, y un argumento inválido (`"servicio": "pagos"`) vuelve
+al modelo como error en JSON, sin excepción. El bucle `chat_con_tools()` tiene un máximo de rondas:
+es el primer control de costo de un agente.
+
+En la demo (`scripts/demo_contratos.py`), ante "reportan errores al pagar en checkout-api", el modelo
+decidió consultar `estado_servicio` y respondió con datos que solo existen en el estado simulado
+(2/3 pods, 12.5 % de errores, un pod `OOMKilled`).
+
+Un bug real durante el desarrollo lo dejó claro: `response_format` y `tools` se armaban pero **no
+se enviaban** al proveedor. Las extracciones fallaban por contrato en ambos intentos y, sin tools
+declaradas, `gpt-oss-120b` inventó una llamada a una herramienta propia (`repo_browser.search`) que
+Groq rechazó con `400 tool_use_failed`. El síntoma estaba lejos de la causa; la pista fue que
+`prompt_tokens` no subía al agregar el esquema.
+
 ### Configuración que falla rápido
 `core/config.py` valida la configuración al arrancar: si falta una API key o un valor es inválido,
 el programa se detiene con un mensaje claro, en vez de fallar a mitad de una petición.
@@ -224,9 +276,10 @@ el programa se detiene con un mensaje claro, en vez de fallar a mitad de una pet
 | Lenguaje y dependencias | Python 3.12, [uv](https://docs.astral.sh/uv/) |
 | LLMs | Groq (`openai/gpt-oss-120b`), Google Gemini — vía API compatible con OpenAI |
 | Tokens | tiktoken (conteo local antes de llamar al modelo) |
+| Contratos | Pydantic (structured outputs y argumentos de tools) |
 | Logging | `logging` + Rich |
 | Calidad de código | ruff |
-| Próximamente | ChromaDB, LangGraph, Pydantic, MCP, pytest, DSPy, Arize Phoenix, Streamlit, Docker |
+| Próximamente | ChromaDB, LangGraph, MCP, pytest, DSPy, Arize Phoenix, Streamlit, Docker |
 
 ## Cómo correrlo
 
@@ -241,6 +294,8 @@ cp .env.example .env        # y completa tu API key
 uv run main.py              # chat con streaming y métricas
 uv run python -m scripts.tokenlab_lab   # laboratorio de tokens, costo, latencia y temperatura
 uv run python -m scripts.eval_severidad # compara las versiones del prompt de severidad
+uv run python -m scripts.eval_severidad --prompt extraer_incidente --versiones 1
+uv run python -m scripts.demo_contratos # texto libre -> Incidente validado, y function calling
 ```
 
 ### Configuración (`.env`)
@@ -260,20 +315,28 @@ uv run python -m scripts.eval_severidad # compara las versiones del prompt de se
 
 ```
 runbook-agent/
+├── contracts/
+│   └── incidente.py    # contrato Incidente (Severidad, Servicio) + regla de negocio
 ├── core/
 │   ├── config.py       # configuración desde .env, validada al arrancar
 │   ├── logger.py       # logging con niveles (Rich)
-│   ├── llm_client.py   # cliente LLM multi-proveedor: chat y streaming con métricas
+│   ├── llm_client.py   # cliente LLM multi-proveedor: chat, streaming, structured outputs y tools
 │   └── tokenlab.py     # conteo de tokens, proyección de costos y presupuestos por feature
 ├── prompting/
-│   ├── promptkit.py    # plantillas versionadas, cadenas de prompts y registro central
+│   ├── promptkit.py    # plantillas versionadas (opcionalmente con contrato) y registro central
 │   ├── severidad.py    # rúbrica SEV y versiones del clasificador de severidad
+│   ├── incidente.py    # prompt de extracción de un Incidente completo
 │   └── evaluation.py   # evaluación contra golden set: accuracy, subestimados, tokens y costo
-├── data/golden/
-│   └── severidad.json  # 20 incidentes etiquetados con su severidad correcta
+├── tools/
+│   ├── base.py         # Tool (argumentos validados con Pydantic) y bucle chat_con_tools()
+│   └── infra.py        # estado_servicio (simulada)
+├── data/
+│   ├── golden/severidad.json # 20 incidentes etiquetados con su severidad correcta
+│   └── infra/servicios.json  # estado simulado de los servicios de producción
 ├── scripts/
 │   ├── tokenlab_lab.py # experimentos medibles de tokens, costo, latencia y temperatura
-│   └── eval_severidad.py # compara las versiones del prompt contra el golden set
+│   ├── eval_severidad.py # compara versiones de un prompt contra el golden set
+│   └── demo_contratos.py # extracción estructurada + function calling
 ├── main.py             # punto de entrada (CLI) con streaming y control de presupuesto
 ├── .env.example        # variables necesarias, sin secretos
 └── pyproject.toml
