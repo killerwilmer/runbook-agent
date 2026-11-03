@@ -32,8 +32,12 @@ class EstadoServicio(BaseModel):
 @lru_cache(maxsize=1)
 def _estados() -> dict[str, EstadoServicio]:
     with open(DATOS, encoding="utf-8") as f:
-        # Validar los datos simulados también: si el JSON está mal, falla aquí y no en el modelo.
-        return {item["servicio"]: EstadoServicio(**item) for item in json.load(f)}
+        estados = {item["servicio"]: EstadoServicio(**item) for item in json.load(f)}
+    # El enum manda: si agregas un servicio y olvidas sus datos, falla aquí, no a mitad de un chat.
+    faltan = set(Servicio) - estados.keys()
+    if faltan:
+        raise ValueError(f"{DATOS} no tiene datos de: {sorted(faltan)}")
+    return estados
 
 
 def estado_servicio(args: EstadoServicioArgs) -> EstadoServicio:

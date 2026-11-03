@@ -22,7 +22,6 @@ class Servicio(StrEnum):
     NOTIFICATIONS_WORKER = "notifications-worker"
     ADMIN_DASHBOARD = "admin-dashboard"
     REPORTS_BATCH = "reports-batch"
-    DESCONOCIDO = "desconocido"
 
 
 SERVICIOS_CRITICOS = frozenset(
@@ -38,7 +37,7 @@ class Incidente(BaseModel):
 
     # El orden importa: el modelo genera los campos en este orden, así que primero
     # registra los hechos y DESPUÉS decide la severidad con esos hechos a la vista.
-    servicio: Servicio = Field(description="Servicio afectado; 'desconocido' si no se menciona.")
+    servicio: Servicio | None = Field(description="Servicio afectado, o null si no se menciona.")
     sintoma: str = Field(min_length=3, max_length=200, description="El problema en una frase.")
     usuarios_afectados_pct: int | None = Field(
         ge=0, le=100, description="Porcentaje de usuarios afectados, o null si no se sabe."

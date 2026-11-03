@@ -37,7 +37,7 @@ def demo_extraccion(client: LLMClient) -> None:
             continue
         i = p.value  # un objeto Incidente: autocompletado, tipos y reglas garantizadas
         pct = f"{i.usuarios_afectados_pct} %" if i.usuarios_afectados_pct is not None else "¿?"
-        print(f"   [{i.severidad}] {i.servicio} · {i.sintoma}")
+        print(f"   [{i.severidad}] {i.servicio or '¿?'} · {i.sintoma}")
         print(f"   usuarios: {pct} · pérdida: {i.perdida_datos_o_dinero} · intentos: {p.attempts}")
         print(f"   ↳ {i.justificacion}")
 
