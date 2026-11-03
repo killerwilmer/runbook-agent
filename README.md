@@ -163,12 +163,12 @@ no recortar el prompt.
 
 Por eso cada feature tiene un **presupuesto de tokens** (`core/tokenlab.py`). El input se valida
 **antes** de gastar un solo token: un request de ~1300 tokens se rechaza en `clasificar_severidad`
-(máximo 500), pero cabe en `responder_con_runbook` (máximo 4000).
+(máximo 1 000), pero cabe en `responder_con_runbook` (máximo 4 000).
 
 | Feature | Máx. entrada | Máx. salida |
 |---|---|---|
 | `chat_general` | 2 000 | 800 |
-| `clasificar_severidad` | 500 | 50 |
+| `clasificar_severidad` | 1 000 | 500 |
 | `responder_con_runbook` | 4 000 | 800 |
 | `diagnostico_agente` | 15 000 | 2 000 |
 | `extraer_incidente` | 1 500 | 1 200 |
