@@ -33,6 +33,8 @@ class Settings:
     log_level: str
     input_cost_per_1m_tokens: float
     output_cost_per_1m_tokens: float
+    embedding_model: str
+    chroma_path: str
 
 
 def _read_float(name: str, default: str) -> float:
@@ -67,4 +69,8 @@ def get_settings() -> Settings:
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
         input_cost_per_1m_tokens=_read_float("INPUT_COST_PER_1M_TOKENS", "0"),
         output_cost_per_1m_tokens=_read_float("OUTPUT_COST_PER_1M_TOKENS", "0"),
+        # El modelo de embeddings y dónde vive el índice. Cambiar de modelo obliga a
+        # reindexar: los vectores de dos modelos distintos no se pueden comparar.
+        embedding_model=os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-small").strip(),
+        chroma_path=os.getenv("CHROMA_PATH", "chroma_db").strip(),
     )
