@@ -334,7 +334,7 @@ error suelto, un `.txt` sin frontmatter y preguntas que compiten con otro docume
 
 | k | Hit rate | MRR |
 |---|---|---|
-| 1 | 58 % | 0.79 |
+| 1 | 58 % | 0.58 |
 | 3 | 100 % | 0.79 |
 
 Lo que mostraron los datos:
@@ -355,6 +355,24 @@ Lo que mostraron los datos:
   de checkout-api con los logs simulados (límite de 2Gi en vez de 512Mi, versiones 2.x en vez de
   4.x), y eso cambió un solo caso: el de la arquitectura. Sin el golden set, nadie se habría enterado.
   Por eso la evaluación se vuelve a correr cada vez que cambian los documentos, no solo el código.
+
+**La generación**, con tres preguntas de prueba (`gpt-oss-120b`, una llamada cada una, entre 1 393 y
+1 810 tokens y 0,8 a 1,8 s; casi todo es contexto recuperado):
+
+- **Citar fuentes no garantiza ser fiel a ellas.** Ante "pods en OOMKilled desde el deploy", recuperó
+  el postmortem de agosto y el runbook, y recomendó el rollback porque el problema empezó con el
+  deploy. Pero también sugirió *"escala temporalmente a 5 réplicas"*, cuando el runbook solo lo
+  indica **sin** un deploy reciente, y la línea de tiempo del postmortem, que el modelo citó, dice
+  *"escala a 5 réplicas. No ayuda"*. Tomó el paso sin su condición y con la evidencia en contra a la
+  vista. El retrieval acertó; falló la fidelidad. Es lo que medirá *faithfulness*, y la razón por la
+  que una acción así tiene que pasar por un verificador y por aprobación humana.
+- **Los filtros de metadatos corrigen la intención.** "Un cliente dice que le cobraron dos veces" sin
+  filtro trae primero el postmortem. Con `--tipo runbooks --servicio payments-api`, las 4 fuentes
+  son del runbook, y la respuesta sigue el procedimiento citando solo lo que usó.
+- **Admitir que no sabe funciona, y lo decide el modelo, no un umbral.** "¿Cuál es la política de
+  vacaciones?" devolvió `encontrada=false` y ninguna cita. Los fragmentos irrelevantes tuvieron
+  similitud 0.79-0.80, y los relevantes de la primera pregunta 0.91-0.93: con e5 todo queda
+  "parecido", así que un umbral fijo de similitud no separa con seguridad "hay respuesta" de "no hay".
 
 ### Configuración que falla rápido
 `core/config.py` valida la configuración al arrancar: si falta una API key o un valor es inválido,
