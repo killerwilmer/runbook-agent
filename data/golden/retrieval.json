@@ -1,0 +1,14 @@
+[
+  {"pregunta": "Los pods de checkout-api se reinician porque se quedan sin memoria, ¿qué hago?", "esperado": "runbooks/checkout-api", "nota": "sinónimo: 'sin memoria' por OOMKilled"},
+  {"pregunta": "¿Escalar réplicas ayuda cuando los pods mueren por OOMKilled?", "esperado": "postmortems/PM-2026-007-checkout-oomkilled", "nota": "la lección está en el postmortem"},
+  {"pregunta": "Un cliente dice que le cobraron dos veces la misma compra", "esperado": "runbooks/payments-api", "nota": "lenguaje de soporte, no técnico"},
+  {"pregunta": "¿Por qué se duplicaron los cobros en septiembre?", "esperado": "postmortems/PM-2026-011-payments-cobros-duplicados", "nota": "pregunta por causa raíz histórica"},
+  {"pregunta": "ERR_CONN_REFUSED payments-db:5432", "esperado": "runbooks/payments-api", "nota": "código de error exacto, sin frase"},
+  {"pregunta": "Nadie puede iniciar sesión y aparece invalid_signature en los logs", "esperado": "runbooks/auth-service", "nota": "mezcla síntoma + código"},
+  {"pregunta": "¿A quién despierto si hay un SEV1 a las 3 de la mañana?", "esperado": "guias/escalamiento", "nota": "documento en .txt sin frontmatter"},
+  {"pregunta": "¿Cómo vuelvo a la versión anterior de un servicio después de un mal deploy?", "esperado": "runbooks/rollback", "nota": "'volver a la versión anterior' = rollback"},
+  {"pregunta": "search returns no results for every user", "esperado": "runbooks/search-service", "nota": "pregunta en inglés, documentos en español"},
+  {"pregunta": "Se acumulan miles de mensajes en la cola de notificaciones", "esperado": "runbooks/notifications-worker", "nota": "describe la alerta QueueBacklog sin nombrarla"},
+  {"pregunta": "El reporte de ventas de hoy no se generó", "esperado": "runbooks/reports-batch", "nota": "el usuario no nombra el servicio"},
+  {"pregunta": "¿De qué servicios depende checkout-api?", "esperado": "guias/arquitectura", "nota": "compite con el runbook de checkout-api"}
+]

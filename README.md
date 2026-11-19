@@ -58,7 +58,7 @@ El proyecto se construye de forma incremental, una capa por etapa:
 - [x] **Análisis de tokens y costo**: conteo local con tiktoken, presupuestos por feature y streaming con TTFT
 - [x] **Clasificación de severidad** con prompts versionados y evaluados contra un golden set
 - [x] **Contratos con Pydantic y function calling**: extracción estructurada de incidentes y primera tool de infraestructura (simulada)
-- [ ] RAG sobre runbooks y postmortems: ingesta, chunking y ChromaDB
+- [x] **RAG sobre runbooks y postmortems**: ingesta con metadatos, chunking por secciones, ChromaDB, respuestas con citas y evaluación del retrieval
 - [ ] RAG avanzado: búsqueda híbrida (BM25 + embeddings), reranking y compresión
 - [ ] RAG en producción: reindexado incremental, permisos por equipo y caché semántico
 - [ ] Soporte para modelos locales (los logs de producción son sensibles)
@@ -298,6 +298,64 @@ declaradas, `gpt-oss-120b` inventó una llamada a una herramienta propia (`repo_
 Groq rechazó con `400 tool_use_failed`. El síntoma estaba lejos de la causa; la pista fue que
 `prompt_tokens` no subía al agregar el esquema.
 
+### RAG: que el agente conozca los runbooks de la empresa
+El modelo sabe qué es un `OOMKilled`, pero no sabe que checkout-api tiene un límite de 2Gi ni que en
+agosto escalar réplicas no sirvió. Esa memoria sale de 13 documentos sintéticos (`data/docs/`): 8
+runbooks, 3 postmortems, la guía de escalamiento y la arquitectura. Cuentan la misma historia que el
+estado y los logs simulados.
+
+```
+data/docs → ingesta → chunks → embeddings (local) → ChromaDB → búsqueda → respuesta con citas
+```
+
+Decisiones:
+
+- **Embeddings locales con `intfloat/multilingual-e5-small`.** Indexar y buscar no usa la API: el
+  texto de los documentos no sale de la máquina, y no cuesta nada. Es multilingüe, porque los
+  documentos están en español y las preguntas pueden venir en inglés. Lee hasta 512 tokens, y lo
+  que pase de ahí se descarta **sin aviso**, así que el indexador reporta el chunk más largo. Usa los
+  prefijos `query:` y `passage:` con los que se entrenó.
+- **El frontmatter es la fuente de los metadatos** (`servicio`, `equipo`, `actualizado`), junto con
+  la carpeta (`tipo`). Sirven para filtrar la búsqueda (`--tipo runbooks --servicio payments-api`) y,
+  más adelante, para permisos por equipo y reindexado incremental.
+- **Chunking por secciones, con el encabezado dentro del texto.** "Paso 2: escala a 5 réplicas" no
+  dice de qué servicio habla; "Runbook: checkout-api › Mitigación" delante, sí. Se agrupan párrafos
+  hasta 300 tokens y se repite uno entre chunks (overlap).
+- **Índice idempotente.** Los ids son estables (`runbooks/checkout-api#3`): reindexar dos veces da el
+  mismo total (55 chunks), y un documento borrado de `data/docs` se borra del índice.
+- **Citas validadas.** La respuesta es un contrato (`RespuestaRAG`): primero `encontrada`, después la
+  respuesta y las citas. Un validador obliga a la coherencia: si encontró la respuesta, tiene que
+  citar; si no la encontró, no puede citar. Una cita a una fuente que no existe se registra como
+  alucinación.
+
+**El retrieval se mide aparte de la generación**, contra un golden set de 12 preguntas
+(`data/golden/retrieval.json`) con casos difíciles: sinónimos, preguntas en inglés, un código de
+error suelto, un `.txt` sin frontmatter y preguntas que compiten con otro documento. No gasta tokens:
+
+| k | Hit rate | MRR |
+|---|---|---|
+| 1 | 58 % | 0.79 |
+| 3 | 100 % | 0.79 |
+
+Lo que mostraron los datos:
+
+- **Con 3 fragmentos, el documento correcto siempre llega; en el primer lugar, solo 7 de 12 veces.**
+  Para generar alcanza, porque el modelo recibe 4 fuentes. Pero cuando los agentes muestren o usen
+  solo el primer resultado, hit@1 va a importar.
+- **Dos fallos son un postmortem que le gana al runbook del mismo servicio.** "Le cobraron dos
+  veces" trae primero el postmortem de cobros duplicados, e "invalid_signature" el de rotación de
+  JWT. No es del todo un error: hablan de lo mismo. Lo que cambia es la **intención** de la pregunta
+  ("¿qué hago?" pide un runbook; "¿por qué pasó?", un postmortem).
+- **Los otros tres fallos son preguntas que no nombran lo que buscan.** "¿A quién despierto si hay
+  un SEV1?" trae el runbook de payments-api antes que la guía de escalamiento (un `.txt` sin
+  encabezados). "El reporte de ventas no se generó" trae catalog-service antes que reports-batch.
+  "¿De qué servicios depende checkout-api?" trae su runbook antes que la arquitectura.
+- **Editar un documento mueve preguntas que no tienen que ver con la edición.** Con la versión
+  anterior de los documentos, hit@1 era 67 %. El único cambio fue alinear el runbook y el postmortem
+  de checkout-api con los logs simulados (límite de 2Gi en vez de 512Mi, versiones 2.x en vez de
+  4.x), y eso cambió un solo caso: el de la arquitectura. Sin el golden set, nadie se habría enterado.
+  Por eso la evaluación se vuelve a correr cada vez que cambian los documentos, no solo el código.
+
 ### Configuración que falla rápido
 `core/config.py` valida la configuración al arrancar: si falta una API key o un valor es inválido,
 el programa se detiene con un mensaje claro, en vez de fallar a mitad de una petición.
@@ -310,9 +368,10 @@ el programa se detiene con un mensaje claro, en vez de fallar a mitad de una pet
 | LLMs | Groq (`openai/gpt-oss-120b`), Google Gemini — vía API compatible con OpenAI |
 | Tokens | tiktoken (conteo local antes de llamar al modelo) |
 | Contratos | Pydantic (structured outputs y argumentos de tools) |
+| RAG | sentence-transformers (`intfloat/multilingual-e5-small`, local) y ChromaDB |
 | Logging | `logging` + Rich |
 | Calidad de código | ruff |
-| Próximamente | ChromaDB, LangGraph, MCP, pytest, DSPy, Arize Phoenix, Streamlit, Docker |
+| Próximamente | LangGraph, MCP, pytest, DSPy, Arize Phoenix, Streamlit, Docker |
 
 ## Cómo correrlo
 
@@ -329,6 +388,10 @@ uv run python -m scripts.tokenlab_lab   # laboratorio de tokens, costo, latencia
 uv run python -m scripts.eval_severidad # compara las versiones del prompt de severidad
 uv run python -m scripts.eval_severidad --prompt extraer_incidente --versiones 1
 uv run python -m scripts.demo_contratos # texto libre -> Incidente validado, y function calling
+uv run python -m scripts.demo_embeddings # similitud coseno entre frases, para ver los embeddings
+uv run python -m scripts.indexar        # indexa data/docs en ChromaDB (local, sin API)
+uv run python -m scripts.eval_retrieval # hit rate y MRR del retrieval contra el golden set
+uv run python -m scripts.preguntar "checkout-api tiene pods en OOMKilled"   # respuesta con citas
 ```
 
 ### Configuración (`.env`)
@@ -349,7 +412,8 @@ uv run python -m scripts.demo_contratos # texto libre -> Incidente validado, y f
 ```
 runbook-agent/
 ├── contracts/
-│   └── incidente.py    # contrato Incidente (Severidad, Servicio) + regla de negocio
+│   ├── incidente.py    # contrato Incidente (Severidad, Servicio) + regla de negocio
+│   └── respuesta.py    # contrato RespuestaRAG: encontrada, respuesta y citas coherentes
 ├── core/
 │   ├── config.py       # configuración desde .env, validada al arrancar
 │   ├── logger.py       # logging con niveles (Rich)
@@ -359,18 +423,31 @@ runbook-agent/
 │   ├── promptkit.py    # plantillas versionadas (opcionalmente con contrato) y registro central
 │   ├── severidad.py    # rúbrica SEV y versiones del clasificador de severidad
 │   ├── incidente.py    # prompt de extracción de un Incidente completo
+│   ├── rag.py          # prompt para responder solo con las fuentes recuperadas, citándolas
 │   └── evaluation.py   # evaluación contra golden set: accuracy, subestimados, tokens y costo
+├── rag/
+│   ├── embeddings.py   # modelo de embeddings local (e5), prefijos query/passage y límite de tokens
+│   ├── ingestion.py    # de archivos a Document (metadatos del frontmatter) y chunking por secciones
+│   ├── vectorstore.py  # ChromaDB: indexado idempotente, borrado de documentos y búsqueda con filtros
+│   ├── answer.py       # recuperar, armar el contexto con fuentes numeradas y responder con citas
+│   └── evaluation.py   # hit rate y MRR del retrieval
 ├── tools/
 │   ├── base.py         # Tool (argumentos validados con Pydantic) y bucle chat_con_tools()
 │   └── infra.py        # estado_servicio y leer_logs (simuladas)
 ├── data/
+│   ├── docs/                 # runbooks, postmortems y guías sintéticos (la base del RAG)
 │   ├── golden/severidad.json # 20 incidentes etiquetados con su severidad correcta
+│   ├── golden/retrieval.json # 12 preguntas con el documento que debería encontrar el RAG
 │   ├── infra/servicios.json  # estado simulado de los servicios de producción
 │   └── infra/logs/           # logs simulados por servicio (el escenario del deploy en checkout-api)
 ├── scripts/
 │   ├── tokenlab_lab.py # experimentos medibles de tokens, costo, latencia y temperatura
 │   ├── eval_severidad.py # compara versiones de un prompt contra el golden set
-│   └── demo_contratos.py # extracción estructurada + function calling
+│   ├── demo_contratos.py # extracción estructurada + function calling
+│   ├── demo_embeddings.py # similitud coseno entre frases
+│   ├── indexar.py      # indexa data/docs en ChromaDB y reporta chunks por documento
+│   ├── eval_retrieval.py # hit rate y MRR contra el golden set de retrieval
+│   └── preguntar.py    # pregunta al RAG, con filtros por tipo y servicio
 ├── main.py             # punto de entrada (CLI) con streaming y control de presupuesto
 ├── .env.example        # variables necesarias, sin secretos
 └── pyproject.toml

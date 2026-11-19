@@ -1,0 +1,37 @@
+GUÍA DE ESCALAMIENTO DE INCIDENTES
+
+Esta guía dice a quién avisar y en cuánto tiempo, según la severidad del incidente. Si dudas entre dos
+niveles, elige el más grave: bajar la severidad después es barato; avisar tarde es caro.
+
+SEV1: caída total, pérdida de datos o de dinero, o más del 50 % de los usuarios afectados.
+Se despierta al on-call del equipo dueño del servicio de inmediato, por teléfono (PagerDuty). Si no
+responde en 5 minutos, se llama al líder del equipo. Se abre el canal #inc-sev1-<fecha> en Slack y se
+nombra a un Incident Commander. Se actualiza la página de estado pública cada 30 minutos.
+
+SEV2: degradación grave de un servicio crítico (10 a 50 % de los usuarios) o una función importante
+caída con un rodeo. Se avisa al on-call por PagerDuty; debe responder en 15 minutos. Se abre un canal
+#inc-sev2-<fecha>. No hace falta Incident Commander salvo que dure más de una hora.
+
+SEV3: impacto menor, pocos usuarios, un servicio no crítico o lentitud sin errores. Se crea un ticket en
+la cola del equipo dueño y se atiende en horario laboral. No se despierta a nadie.
+
+SEV4: sin impacto para usuarios (alertas preventivas, mantenimiento). Ticket con prioridad baja.
+
+EQUIPOS Y ON-CALL
+
+- Equipo checkout (checkout-api, catalog-service): rotación semanal, PagerDuty "checkout-oncall".
+- Equipo pagos (payments-api): rotación semanal, PagerDuty "pagos-oncall". Cualquier problema con
+  dinero se avisa también al líder del equipo.
+- Equipo identidad (auth-service): rotación semanal, PagerDuty "identidad-oncall".
+- Equipo plataforma (Kubernetes, bases de datos, colas, search-service, notifications-worker,
+  reports-batch): rotación semanal, PagerDuty "plataforma-oncall".
+
+ACCIONES QUE REQUIEREN APROBACIÓN
+
+Reiniciar servicios, hacer rollback, cambiar feature flags de pagos o reiniciar bases de datos y Redis
+en producción requiere la aprobación explícita del on-call del equipo dueño. La aprobación se escribe en
+el canal del incidente para que quede registrada.
+
+DESPUÉS DEL INCIDENTE
+
+Todo SEV1 y SEV2 tiene un postmortem sin culpables en los 5 días hábiles siguientes.
